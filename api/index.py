@@ -1,47 +1,61 @@
 import time
 import uuid
-from fastapi import FastAPI, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# 1. Strict CORS Configuration
 ALLOWED_ORIGIN = "https://example.com"
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],  # Only allow your specific assigned origin
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 2. Custom Middleware for Headers (Request ID & Process Time)
 @app.middleware("http")
-async def add_custom_headers(request: Request, call_next):
+async def dynamic_cors_and_headers(request: Request, call_next):
     start_time = time.perf_counter()
     request_id = str(uuid.uuid4())
     
+    # Get the origin header sent by the client browser/grader
+    incoming_origin = request.headers.get("origin")
+
+    # 1. Handle Preflight OPTIONS requests
+    if request.method == "OPTIONS":
+        # Create a blank 200 OK response for the preflight check
+        response = Response(status_code=200)
+        
+        # ONLY echo back the header if it matches your specific assigned origin
+        if incoming_origin == ALLOWED_ORIGIN:
+            response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+            response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Request-ID, X-Process-Time"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+        # Always inject the required assignment tracking metrics
+        process_time = time.perf_counter() - start_time
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time"] = f"{process_time:.6f}"
+        return response
+
+    # 2. Handle normal requests (GET /stats, etc.)
     response = await call_next(request)
     
+    # Attach CORS header only if it matches your assigned origin
+    if incoming_origin == ALLOWED_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+    # Inject required assignment tracking metrics
     process_time = time.perf_counter() - start_time
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
     return response
 
-# 🌟 ADDED: Fallback root route so visiting the base URL directly doesn't throw a 404
 @app.get("/")
 async def root():
     return {"status": "healthy", "message": "Metrics API is running"}
 
-# 🌟 ADDED: The missing ping route required by your grader
 @app.get("/ping")
 async def ping():
     return {"status": "ok"}
 
-# 3. The Metrics Statistics Endpoint
 @app.get("/stats")
 async def get_stats(values: str = Query(..., description="Comma-separated integers")):
     try:
@@ -59,7 +73,7 @@ async def get_stats(values: str = Query(..., description="Comma-separated intege
     mean_val = sum_val / count_val
 
     return {
-        "email": "24f2001882@ds.study.iitm.ac.in", 
+        "email": "24f2001882@ds.study.iitm.ac.in",  
         "count": count_val,
         "sum": sum_val,
         "min": min_val,
